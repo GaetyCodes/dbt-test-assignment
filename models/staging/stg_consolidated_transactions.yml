@@ -3,12 +3,30 @@ version: 2
 models:
   - name: stg_consolidated_transactions
     description: >
-      Sample staging model for the denormalized landing extract.
-      Next step for candidates: normalize into dims + fact (this model alone is not the end state).
+      Light cleaning of the denormalized landing extract: snake_case renames, type
+      casts, and non-destructive data-quality flags (has_invalid_key, is_return,
+      is_restated_row). Nothing is dropped here; de-duplication and normalization
+      happen downstream. Cost columns are renamed to make their grain explicit:
+      pack_unit_cost / pack_standard_cost are per-PACK, landed_unit_cost is per-UNIT.
     columns:
       - name: transaction_id
-        description: Business transaction id (not unique in the raw extract).
+        description: Business transaction id. NOT unique in the raw extract (re-ingestion duplicates).
         tests:
           - not_null
       - name: quantity
-        description: May be negative for returns.
+        description: Units sold; negative for returns/adjustments.
+      - name: landed_unit_cost
+        description: Actual per-unit cost paid (reconciles to source cost). Used for margin.
+      - name: pack_unit_cost
+        description: Per-PACK cost (= landed_unit_cost * pack_size). Decoy for per-unit margin.
+      - name: has_invalid_key
+        description: True when product_id/store_id is NULL or the 99901 sentinel.
+      - name: is_return
+        description: True when quantity < 0.
+      - name: is_clone_duplicate
+        description: >
+          True for injected clone duplicates — exact economic copies of real
+          transactions given fresh transaction_ids (a dense id block above the
+          organic range) that de-dup by transaction_id cannot catch. Detected by
+          their only-landed-cost signature (pack_unit_cost and pack_standard_cost
+          both NULL). Excluded from fct_sales and the dimensions.

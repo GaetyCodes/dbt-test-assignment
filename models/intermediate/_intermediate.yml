@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: int_transactions_cleaned
+    description: >
+      One row per transaction after de-duplication (keep latest ingested_at per
+      transaction_id). Resolves the cost representation: unit_cost_landed is the
+      per-unit actual cost; unit_cost_standard is standard_unit_cost/pack_size for
+      budget-margin sensitivity. Economics (net_revenue, cogs_landed, gross_profit)
+      are net of returns. Invalid-key rows are retained but flagged.
+    columns:
+      - name: transaction_id
+        description: Unique after de-duplication.
+        tests:
+          - not_null
+          - unique
+      - name: unit_cost_landed
+        description: Chosen per-unit cost (actual paid).
+      - name: net_revenue
+        description: quantity * unit_price (net of returns).
+      - name: gross_profit
+        description: net_revenue - cogs_landed.
+      - name: has_invalid_key
+        description: True for NULL / 99901 sentinel keys (excluded from fct_sales).
+      - name: is_clone_duplicate
+        description: True for injected clone duplicates with fresh ids (excluded from fct_sales and dims).

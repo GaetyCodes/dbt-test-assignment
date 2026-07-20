@@ -1,0 +1,623 @@
+version: 2
+
+models:
+  # ---------------- dimensions ----------------
+  - name: dim_product
+    description: >
+      Product dimension at one row per valid product_id. Canonical name from the
+      modal product_name_catalog (fixes the "Cosmetics"/"Vanities" corruption on
+      product 19); category from the modal product_category. Excludes NULL and
+      99901 sentinel keys. product_effective_from/to are intentionally omitted —
+      they disagree with actual sales dates.
+    meta:
+      layer: marts
+      grain: one row per product_id
+      owner: analytics_engineering
+    columns:
+      - name: product_id
+        description: >
+          Product surrogate key from source Product index. Primary key of this
+          dimension; excludes NULL and 99901.
+        tests:
+          - not_null
+          - unique
+      - name: product_name
+        description: >
+          Canonical product name = mode(product_name_catalog) per product_id.
+          Prefer this over the transaction-stamped Product Name.
+        tests:
+          - not_null
+      - name: product_category
+        description: >
+          Modal merchandising category per product (Dining, Electronics,
+          Furniture, Household, Kitchen, Other, Sports).
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - Dining
+                - Electronics
+                - Furniture
+                - Household
+                - Kitchen
+                - Other
+                - Sports
+
+  - name: dim_store
+    description: >
+      Store dimension at one row per valid store_id. Attributes resolved by modal
+      value per store (removes the "(restated)" 10x-opex row). region_name is
+      DERIVED from state_code via seed_state_region (fixes Maryland/Unknown
+      corruption in the extract). annual_operating_costs treated as an annual figure.
+    meta:
+      layer: marts
+      grain: one row per store_id
+      owner: analytics_engineering
+      region_source: seed_state_region
+      opex_grain: annual
+    columns:
+      - name: store_id
+        description: >
+          Store surrogate key from source Store ID. Primary key; excludes NULL
+          and 99901 sentinel.
+        tests:
+          - not_null
+          - unique
+      - name: store_name
+        description: >
+          Modal store display name. Restated variants (name contains
+          "(restated)") lose to the majority name.
+        tests:
+          - not_null
+      - name: state_code
+        description: US two-letter state code (modal per store).
+        tests:
+          - not_null
+          - relationships:
+              to: ref('seed_state_region')
+              field: state_code
+      - name: state_name
+        description: >
+          Full state name from seed_state_region matched on state_code
+          (e.g. Pennsylvania for PA).
+        tests:
+          - not_null
+      - name: region_name
+        description: >
+          Commercial region derived from state_code via US-Census seed, not the
+          corrupted source region_name. Falls back to Unknown if unmapped.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["South", "West", "Midwest", "Northeast", "Unknown"]
+      - name: store_type
+        description: >
+          Modal municipality / store classification (City, Borough, CDP, etc.).
+        tests:
+          - not_null
+      - name: store_sqft
+        description: Modal store floor area in square feet.
+        tests:
+          - not_null
+      - name: annual_operating_costs
+        description: >
+          Modal direct_store_operating_costs, treated as an ANNUAL figure and
+          charged once per year the store is active in mart calculations.
+        tests:
+          - not_null
+
+  # ---------------- fact ----------------
+  - name: fct_sales
+    description: >
+      Sales fact at one row per de-duplicated transaction (monthly line grain).
+      Valid product and store keys only; returns retained so all measures are net;
+      clone duplicates excluded. Costed at per-unit landed cost (actual paid).
+    meta:
+      layer: marts
+      grain: one row per transaction_id
+      owner: analytics_engineering
+      cost_basis: landed_unit_cost
+      includes_returns: true
+    columns:
+      - name: transaction_id
+        description: >
+          Unique transaction key after keeping the latest ingested_at per ID.
+          Grain / primary key of this fact.
+        tests:
+          - not_null
+          - unique
+      - name: product_id
+        description: Foreign key to dim_product.product_id.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_product')
+              field: product_id
+      - name: store_id
+        description: Foreign key to dim_store.store_id.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_store')
+              field: store_id
+      - name: transaction_month
+        description: >
+          Economic month (first-of-month date from Transaction Date). Use for
+          monthly trends and joins to calendar.
+        tests:
+          - not_null
+      - name: transaction_year
+        description: Calendar year extracted from transaction_month (integer).
+        tests:
+          - not_null
+      - name: quantity
+        description: >
+          Units sold; negative for returns. Fact retains returns so aggregates
+          are net of returns.
+        tests:
+          - not_null
+      - name: unit_price
+        description: Selling price per unit.
+        tests:
+          - not_null
+      - name: pack_size
+        description: Units per pack (1 or 2). Informational; costs already on unit grain.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2]
+      - name: unit_cost_landed
+        description: >
+          Actual per-unit cost paid (from landed_unit_cost). Primary COGS basis.
+        tests:
+          - not_null
+      - name: unit_cost_standard
+        description: >
+          Budget per-unit cost = pack_standard_cost / pack_size. For margin
+          sensitivity vs Finance planning, not used in gross_profit.
+      - name: net_revenue
+        description: quantity * unit_price (net of returns when quantity is negative).
+        tests:
+          - not_null
+      - name: cogs_landed
+        description: quantity * unit_cost_landed.
+        tests:
+          - not_null
+      - name: gross_profit
+        description: net_revenue - cogs_landed.
+        tests:
+          - not_null
+      - name: gross_margin_pct
+        description: >
+          100 * gross_profit / net_revenue (null when net_revenue is 0). Rounded
+          to 4 decimal places.
+      - name: is_return
+        description: True when quantity < 0.
+        tests:
+          - not_null
+      - name: source_system
+        description: >
+          Lineage system of the surviving row after de-duplication (ERP, Manual, POS).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [ERP, Manual, POS]
+
+  # ---------------- CEO marts ----------------
+  - name: mart_sales_annual
+    description: >
+      Annual P&L rollup for CEO Q1/Q4 — net sales, gross margin, operating profit
+      after annual store opex, and YoY growth. One row per transaction_year.
+    meta:
+      layer: marts
+      grain: one row per transaction_year
+      answers: [Q1_sales_growth, Q4_profitable_growth]
+      owner: analytics_engineering
+    columns:
+      - name: transaction_year
+        description: Calendar year of sales activity.
+        tests:
+          - not_null
+          - unique
+      - name: net_sales
+        description: Sum of fct_sales.net_revenue for the year.
+        tests:
+          - not_null
+      - name: cogs
+        description: Sum of fct_sales.cogs_landed for the year.
+        tests:
+          - not_null
+      - name: gross_profit
+        description: Sum of fct_sales.gross_profit for the year.
+        tests:
+          - not_null
+      - name: gross_margin_pct
+        description: 100 * gross_profit / net_sales.
+        tests:
+          - not_null
+      - name: operating_costs
+        description: >
+          Sum of each active store's annual_operating_costs, charged once per
+          year the store transacts.
+        tests:
+          - not_null
+      - name: operating_profit
+        description: gross_profit - operating_costs.
+        tests:
+          - not_null
+      - name: operating_margin_pct
+        description: 100 * operating_profit / net_sales.
+        tests:
+          - not_null
+      - name: net_units
+        description: Sum of quantity (net of returns).
+        tests:
+          - not_null
+      - name: transactions
+        description: Count of fact rows (de-duplicated transactions) in the year.
+        tests:
+          - not_null
+      - name: net_sales_yoy_pct
+        description: Year-over-year percent change in net_sales (null for first year).
+      - name: gross_profit_yoy_pct
+        description: Year-over-year percent change in gross_profit.
+      - name: operating_profit_yoy_pct
+        description: Year-over-year percent change in operating_profit.
+
+  - name: mart_sales_monthly
+    description: >
+      Monthly net sales / gross profit / margin trendline. One row per
+      transaction_month.
+    meta:
+      layer: marts
+      grain: one row per transaction_month
+      answers: [Q1_sales_trend]
+      owner: analytics_engineering
+    columns:
+      - name: transaction_month
+        description: First-of-month economic date; primary key of this mart.
+        tests:
+          - not_null
+          - unique
+      - name: transaction_year
+        description: Calendar year of transaction_month.
+        tests:
+          - not_null
+      - name: net_sales
+        description: Sum of net_revenue for the month.
+        tests:
+          - not_null
+      - name: gross_profit
+        description: Sum of gross_profit for the month.
+        tests:
+          - not_null
+      - name: gross_margin_pct
+        description: 100 * gross_profit / net_sales.
+        tests:
+          - not_null
+      - name: net_units
+        description: Sum of quantity (net of returns).
+        tests:
+          - not_null
+      - name: transactions
+        description: Count of fact rows in the month.
+        tests:
+          - not_null
+
+  - name: mart_region_performance
+    description: >
+      Regional performance by year for CEO Q2 — net sales, gross profit, margin,
+      active stores, sales per store, and YoY. Region comes from dim_store
+      (seed-derived), not the raw extract. Grain uniqueness on
+      (region_name, transaction_year) is enforced by
+      tests/assert_mart_region_performance_grain.sql.
+    meta:
+      layer: marts
+      grain: one row per region_name x transaction_year
+      answers: [Q2_top_regions]
+      owner: analytics_engineering
+    columns:
+      - name: region_name
+        description: Commercial region from dim_store (Census-derived).
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["South", "West", "Midwest", "Northeast", "Unknown"]
+      - name: transaction_year
+        description: Calendar year of sales activity.
+        tests:
+          - not_null
+      - name: active_stores
+        description: Distinct stores with at least one sale in the region-year.
+        tests:
+          - not_null
+      - name: net_sales
+        description: Sum of net_revenue for the region-year.
+        tests:
+          - not_null
+      - name: gross_profit
+        description: Sum of gross_profit for the region-year.
+        tests:
+          - not_null
+      - name: gross_margin_pct
+        description: 100 * gross_profit / net_sales.
+        tests:
+          - not_null
+      - name: net_units
+        description: Sum of quantity (net of returns).
+        tests:
+          - not_null
+      - name: net_sales_per_store
+        description: net_sales / active_stores (rounded to whole currency units).
+        tests:
+          - not_null
+      - name: net_sales_yoy_pct
+        description: >
+          Year-over-year percent change in net_sales within the same region.
+
+  - name: mart_product_performance
+    description: >
+      Product-level lifetime performance with 2021/2022 splits for CEO Q2 top
+      products. One row per product_id.
+    meta:
+      layer: marts
+      grain: one row per product_id
+      answers: [Q2_top_products]
+      owner: analytics_engineering
+    columns:
+      - name: product_id
+        description: Product key; primary key of this mart.
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              to: ref('dim_product')
+              field: product_id
+      - name: product_name
+        description: Canonical product name from dim_product.
+        tests:
+          - not_null
+      - name: product_category
+        description: Merchandising category from dim_product.
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - Dining
+                - Electronics
+                - Furniture
+                - Household
+                - Kitchen
+                - Other
+                - Sports
+      - name: net_sales
+        description: Lifetime sum of net_revenue.
+        tests:
+          - not_null
+      - name: gross_profit
+        description: Lifetime sum of gross_profit.
+        tests:
+          - not_null
+      - name: gross_margin_pct
+        description: Lifetime 100 * gross_profit / net_sales.
+        tests:
+          - not_null
+      - name: net_units
+        description: Lifetime sum of quantity (net of returns).
+        tests:
+          - not_null
+      - name: net_sales_2022
+        description: Net revenue in calendar year 2022 only.
+      - name: net_sales_2021
+        description: Net revenue in calendar year 2021 only.
+      - name: gross_profit_2022
+        description: Gross profit in calendar year 2022 only.
+      - name: gross_profit_2021
+        description: Gross profit in calendar year 2021 only.
+
+  - name: mart_store_performance
+    description: >
+      Store-level lifetime performance with operating profit after annual opex
+      (charged once per active year) for CEO Q2 top stores.
+    meta:
+      layer: marts
+      grain: one row per store_id
+      answers: [Q2_top_stores]
+      opex_grain: annual
+      owner: analytics_engineering
+    columns:
+      - name: store_id
+        description: Store key; primary key of this mart.
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              to: ref('dim_store')
+              field: store_id
+      - name: store_name
+        description: Store display name from dim_store.
+        tests:
+          - not_null
+      - name: state_code
+        description: US state code from dim_store.
+        tests:
+          - not_null
+      - name: region_name
+        description: Census-derived region from dim_store.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["South", "West", "Midwest", "Northeast", "Unknown"]
+      - name: store_type
+        description: Store classification from dim_store.
+        tests:
+          - not_null
+      - name: store_sqft
+        description: Store floor area from dim_store.
+        tests:
+          - not_null
+      - name: annual_operating_costs
+        description: Annual direct opex for one year of activity.
+        tests:
+          - not_null
+      - name: active_years
+        description: Count of distinct years with at least one sale.
+        tests:
+          - not_null
+      - name: net_sales
+        description: Lifetime sum of net_revenue.
+        tests:
+          - not_null
+      - name: gross_profit
+        description: Lifetime sum of gross_profit.
+        tests:
+          - not_null
+      - name: net_units
+        description: Lifetime sum of quantity (net of returns).
+        tests:
+          - not_null
+      - name: operating_costs
+        description: >
+          annual_operating_costs * active_years (opex charged once per active year).
+        tests:
+          - not_null
+      - name: operating_profit
+        description: gross_profit - operating_costs.
+        tests:
+          - not_null
+      - name: gross_margin_pct
+        description: 100 * gross_profit / net_sales.
+        tests:
+          - not_null
+      - name: operating_margin_pct
+        description: 100 * operating_profit / net_sales.
+        tests:
+          - not_null
+
+  - name: mart_growth_drivers_2022
+    description: >
+      2021→2022 category-level decomposition of revenue growth and margin decline
+      (CEO Q3). Exposes volume, price, and cost effects per product_category.
+    meta:
+      layer: marts
+      grain: one row per product_category
+      answers: [Q3_growth_drivers]
+      owner: analytics_engineering
+      effect_formulas:
+        volume_effect: "(units_2022 - units_2021) * avg_price_2021"
+        price_effect: "(avg_price_2022 - avg_price_2021) * units_2022"
+        cost_effect: "-(avg_cost_2022 - avg_cost_2021) * units_2022"
+    columns:
+      - name: product_category
+        description: Merchandising category; primary key of this mart.
+        tests:
+          - not_null
+          - unique
+          - accepted_values:
+              values:
+                - Dining
+                - Electronics
+                - Furniture
+                - Household
+                - Kitchen
+                - Other
+                - Sports
+      - name: units_2021
+        description: Net units sold in 2021.
+        tests:
+          - not_null
+      - name: units_2022
+        description: Net units sold in 2022.
+        tests:
+          - not_null
+      - name: net_sales_2021
+        description: Net revenue in 2021.
+        tests:
+          - not_null
+      - name: net_sales_2022
+        description: Net revenue in 2022.
+        tests:
+          - not_null
+      - name: net_sales_delta
+        description: net_sales_2022 - net_sales_2021.
+        tests:
+          - not_null
+      - name: gross_profit_2021
+        description: Gross profit in 2021.
+        tests:
+          - not_null
+      - name: gross_profit_2022
+        description: Gross profit in 2022.
+        tests:
+          - not_null
+      - name: gross_profit_delta
+        description: gross_profit_2022 - gross_profit_2021.
+        tests:
+          - not_null
+      - name: margin_2021_pct
+        description: Gross margin percent in 2021.
+        tests:
+          - not_null
+      - name: margin_2022_pct
+        description: Gross margin percent in 2022.
+        tests:
+          - not_null
+      - name: avg_price_2021
+        description: Average selling price per unit in 2021 (net_sales / units).
+        tests:
+          - not_null
+      - name: avg_price_2022
+        description: Average selling price per unit in 2022.
+        tests:
+          - not_null
+      - name: avg_cost_2021
+        description: Average landed unit cost in 2021 (cogs / units).
+        tests:
+          - not_null
+      - name: avg_cost_2022
+        description: Average landed unit cost in 2022.
+        tests:
+          - not_null
+      - name: volume_effect
+        description: >
+          Approximate revenue impact from unit volume change —
+          (units_2022 - units_2021) * avg_price_2021.
+        tests:
+          - not_null
+      - name: price_effect
+        description: >
+          Approximate revenue impact from ASP change —
+          (avg_price_2022 - avg_price_2021) * units_2022.
+        tests:
+          - not_null
+      - name: cost_effect
+        description: >
+          Approximate profit impact from unit-cost change (negative = cost
+          headwind) — -(avg_cost_2022 - avg_cost_2021) * units_2022.
+        tests:
+          - not_null
+
+  - name: mart_data_quality
+    description: >
+      Scorecard quantifying every contamination handled by the pipeline (CEO Q5 /
+      auditability). One row per issue with the affected row_count. Nothing is
+      dropped silently — counts here explain exclusions and flags upstream.
+    meta:
+      layer: marts
+      grain: one row per issue
+      answers: [Q5_data_issues]
+      owner: analytics_engineering
+    columns:
+      - name: issue
+        description: >
+          Machine-readable issue label (e.g. duplicate_reingested_rows,
+          clone_duplicate_rows_new_ids, sentinel_99901_rows,
+          return_rows_negative_qty, region_mislabelled_rows).
+        tests:
+          - not_null
+          - unique
+      - name: row_count
+        description: >
+          Number of staging rows matching the issue (or raw_rows for the total).
+        tests:
+          - not_null

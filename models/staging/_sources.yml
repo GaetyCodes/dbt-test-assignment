@@ -3,31 +3,227 @@ version: 2
 sources:
   - name: raw
     description: >
-      Single denormalized landing extract. Normalize into dims/facts in dbt;
-      do not treat this file as the analytical model.
+      Landing zone for the denormalized sales extract. One wide CSV with product,
+      store, and region attributes repeated on every transaction row. Normalize
+      into dims/facts in dbt — do not treat this file as the analytical model.
     meta:
       external_location: "read_csv_auto('data/raw/{name}.csv')"
+      loader: duckdb_read_csv_auto
+      owner: analytics_engineering
     tables:
       - name: consolidated_transactions
         description: >
-          Wide sales extract with repeated product/store/region attributes.
-          Transaction ID is not unique; cost columns may disagree.
+          Monthly sales-line extract for a US department store. Grain is intended
+          to be one row per transaction, but Transaction ID is not unique
+          (re-ingestion duplicates) and some injected clones reuse economics under
+          fresh IDs. Cost columns disagree on pack vs unit grain; product/store
+          attributes conflict across rows for the same key.
+        meta:
+          file: data/raw/consolidated_transactions.csv
+          grain: intended one row per Transaction ID (violated in source)
+          known_issues:
+            - duplicate_transaction_ids
+            - competing_cost_columns
+            - conflicting_product_store_attrs
+            - negative_quantities
+            - null_and_sentinel_keys
         columns:
           - name: Transaction ID
+            quote: true
+            description: >
+              Business transaction identifier. Not unique in the extract —
+              ~9.8k IDs are re-ingested with a later ingested_at. Sales-ops rule
+              downstream: keep the latest ingested_at.
+            tests:
+              - not_null
+
           - name: Transaction Date
+            quote: true
+            description: >
+              Economic date of the sale, truncated to first-of-month
+              (e.g. 2021-09-01). This is the date used for time-series and YoY,
+              not ingested_at.
+            tests:
+              - not_null
+
           - name: quantity
+            description: >
+              Units sold on the line. Typically 1–10; negative values are
+              returns/adjustments and must be retained so measures stay net.
+            tests:
+              - not_null
+
           - name: unit_price
+            description: >
+              Selling price per unit (not per pack). Multiplied by quantity for
+              net revenue.
+            tests:
+              - not_null
+
           - name: unit_cost
+            description: >
+              Competing cost field. Empirically per-PACK (= landed_unit_cost *
+              pack_size), despite the name. NULL on injected clone duplicates.
+              Do not use raw as a per-unit COGS without dividing by pack_size.
+
           - name: standard_unit_cost
+            description: >
+              Budget/standard cost used by Finance planning for margin targets.
+              Same pack grain as unit_cost (equals unit_cost in observed rows).
+              NULL on clone duplicates. Stakeholder note: FP&A prefers this for
+              budget margin; pipeline uses landed for actual margin and exposes
+              standard as a sensitivity.
+
           - name: landed_unit_cost
+            description: >
+              Actual per-UNIT cost paid (AP/Ops). Always populated in the sample;
+              reconciles to source cost. Chosen as the primary COGS basis for
+              gross margin in the marts.
+            tests:
+              - not_null
+
           - name: pack_size
+            description: >
+              Units per pack/case. Observed values: 1 or 2. Critical when
+              interpreting unit_cost / standard_unit_cost (pack grain) vs
+              landed_unit_cost and unit_price (unit grain).
+            tests:
+              - not_null
+              - accepted_values:
+                  values: [1, 2]
+
           - name: Product index
+            quote: true
+            description: >
+              Product key (float in CSV, cast to integer in staging). Nullable;
+              also includes sentinel 99901 ("Unknown Bundle"). Rows with null or
+              sentinel keys cannot join cleanly to a product dimension.
+
           - name: Product Name
+            quote: true
+            description: >
+              Product name stamped on the transaction. Can disagree with
+              product_name_catalog (e.g. product 19 appears as "Cosmetics" here
+              vs "Vanities" in catalog). Prefer catalog for the dimension.
+            tests:
+              - not_null
+
           - name: product_name_catalog
+            description: >
+              Canonical product name from the product master. Used as the
+              authoritative name when building dim_product (modal per product_id).
+            tests:
+              - not_null
+
           - name: product_category
+            description: >
+              Merchandising category. Observed values: Dining, Electronics,
+              Furniture, Household, Kitchen, Other, Sports. May vary slightly
+              across rows for the same product; dimension takes the modal value.
+            tests:
+              - not_null
+              - accepted_values:
+                  values:
+                    - Dining
+                    - Electronics
+                    - Furniture
+                    - Household
+                    - Kitchen
+                    - Other
+                    - Sports
+
+          - name: product_effective_from
+            description: >
+              Claimed SCD start date for the product. Unreliable — thousands of
+              sales fall outside the stated window. Documented but not used to
+              filter the fact.
+            tests:
+              - not_null
+
+          - name: product_effective_to
+            description: >
+              Claimed SCD end date for the product (often 2099-12-31). Same
+              reliability caveat as product_effective_from; ignored for filtering.
+            tests:
+              - not_null
+
           - name: Store ID
+            quote: true
+            description: >
+              Store key (float in CSV, cast to integer in staging). Nullable;
+              also includes sentinel 99901. Invalid keys are excluded from
+              fct_sales and dim_store.
+
           - name: store_name
+            description: >
+              Store display name. Occasional "(restated)" variants carry a 10x
+              inflated direct_store_operating_costs; modal name per store wins
+              in the dimension.
+            tests:
+              - not_null
+
           - name: state_code
+            description: >
+              US two-letter state code for the store location (e.g. PA, WA, IL).
+              Trusted more than region_name; used with seed_state_region to
+              derive commercial region.
+            tests:
+              - not_null
+
+          - name: state
+            description: >
+              Full US state / territory name corresponding to state_code
+              (e.g. Pennsylvania, Washington).
+            tests:
+              - not_null
+
           - name: region_name
+            description: >
+              Commercial region on the extract. Observed: Midwest, Northeast,
+              South, West, Unknown. Corrupted for some states (e.g. Maryland
+              ~50/50 Northeast vs South). Do not use for analytics — derive
+              region from state_code instead.
+            tests:
+              - not_null
+              - accepted_values:
+                  values: [Midwest, Northeast, South, West, Unknown]
+
+          - name: store_type
+            description: >
+              Municipality / store classification from the extract (City, Borough,
+              CDP, Township, Unified Government, etc.). Modal value per store
+              used in dim_store.
+            tests:
+              - not_null
+
+          - name: store_sqft
+            description: >
+              Store floor area in square feet (float). Repeated on every
+              transaction; take modal per store in the dimension.
+            tests:
+              - not_null
+
+          - name: direct_store_operating_costs
+            description: >
+              Direct store opex figure repeated on each row. Treated as an ANNUAL
+              cost in the pipeline (a monthly reading would imply opex ~3.5x
+              revenue). Watch for restated rows with 10x inflation.
+            tests:
+              - not_null
+
           - name: source_system
+            description: >
+              Lineage system that produced the row. Observed values: ERP, Manual,
+              POS. Used only as a tie-break when de-duplicating — not economic truth.
+            tests:
+              - not_null
+              - accepted_values:
+                  values: [ERP, Manual, POS]
+
           - name: ingested_at
+            description: >
+              Load/ingestion date of the row. When Transaction IDs collide, keep
+              the latest ingested_at (sales-ops rule). Can precede Transaction Date
+              on some rows; do not substitute for the economic date.
+            tests:
+              - not_null

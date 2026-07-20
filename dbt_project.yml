@@ -22,3 +22,12 @@ models:
     marts:
       +materialized: table
       +schema: marts
+
+seeds:
+  retail_challenge:
+    +schema: staging
+    seed_state_region:
+      +column_types:
+        state_code: varchar
+        state_name: varchar
+        region_name: varchar

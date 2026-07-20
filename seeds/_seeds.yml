@@ -1,0 +1,26 @@
+version: 2
+
+seeds:
+  - name: seed_state_region
+    description: >
+      Canonical US-Census mapping of state_code -> region (Northeast, Midwest, South,
+      West). Used to derive store region from state_code instead of trusting the
+      corrupted region_name column in the extract.
+    columns:
+      - name: state_code
+        description: Two-letter US state code (e.g. PA, MD, WA).
+        tests:
+          - not_null
+          - unique
+      - name: state_name
+        description: Full US state or territory name (e.g. Pennsylvania, Maryland).
+        tests:
+          - not_null
+      - name: region_name
+        description: >
+          US-Census commercial region used to override corrupted region_name
+          values in the landing extract.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["South", "West", "Midwest", "Northeast"]
