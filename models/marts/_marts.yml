@@ -61,3 +61,7 @@ models:
       Net Sales YoY bridge per product-year - volume, location (price list) mix, like-for-like price,
       new product. Components sum exactly to net_sales_yoy_abs (tested). Replaces the earlier product-level
       price/volume split, which counted the shift towards California as price.
+  - name: mart_price_list_yearly
+    description: >
+      Price list x year store economics (stores, units per sq ft, sales, GM%, opex, contribution with
+      annual / pro-rated / monthly opex, loss-making store counts). Excludes the unknown store.
