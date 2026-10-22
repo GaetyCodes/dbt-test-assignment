@@ -45,6 +45,7 @@ select
     gross_margin / lag(gross_margin) over w - 1 as gross_margin_yoy_pct,
     store_contribution - lag(store_contribution) over w as store_contribution_yoy_abs,
     store_contribution / lag(store_contribution) over w - 1 as store_contribution_yoy_pct,
+    -- includes product and location mix; like-for-like price is in mart_sales_bridge_yearly
     avg_selling_price / lag(avg_selling_price) over w - 1 as avg_selling_price_yoy_pct
 from kpi
 window w as (order by transaction_year)

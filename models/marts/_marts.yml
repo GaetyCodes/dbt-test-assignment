@@ -47,7 +47,7 @@ models:
       - name: transaction_year
         tests: [unique, not_null]
   - name: mart_product_yearly
-    description: Product x year performance, price metrics and price/volume bridge.
+    description: Product x year performance (sales, margin, ASP incl. location mix, landed cost). Growth bridge lives in mart_sales_bridge_yearly.
   - name: mart_store_yearly
     description: Store x year P&L to store contribution.
   - name: mart_sales_monthly
@@ -56,3 +56,8 @@ models:
     description: >
       Product x month price health - reference list price, landed cost, list markup, realised price,
       price realisation vs list, and promo unit share.
+  - name: mart_sales_bridge_yearly
+    description: >
+      Net Sales YoY bridge per product-year - volume, location (price list) mix, like-for-like price,
+      new product. Components sum exactly to net_sales_yoy_abs (tested). Replaces the earlier product-level
+      price/volume split, which counted the shift towards California as price.
