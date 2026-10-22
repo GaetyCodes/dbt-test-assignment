@@ -1,7 +1,7 @@
 # Solution notes
 
 ```bash
-uv sync && export DBT_PROFILES_DIR="$(pwd)" && uv run dbt build   # 17 models, 38 tests
+uv sync && export DBT_PROFILES_DIR="$(pwd)" && uv run dbt build   # 17 models, 40 tests
 uv run python scripts/build_deck.py                                # -> deliverables/ceo_sales_review.pptx
 ```
 
@@ -20,7 +20,7 @@ The deck script reads only the marts and refuses to run unless the last `dbt bui
 ## Tests
 
 Keys, relationships and accepted values, plus singular tests in `tests/`: source -> fact and fact -> mart reconciliation,
-growth bridge sums exactly, store contribution ties out, and assumption tests (duplicate copies agree, one landed cost
+growth bridge sums exactly, store contribution ties out, and assumption tests (duplicate copies agree, product names and the store name + state pairs used for key recovery map to one id, one landed cost
 per product-month, list price is always a California price). Each reconciliation test was checked to fail on an injected error.
 
 ## Key decisions

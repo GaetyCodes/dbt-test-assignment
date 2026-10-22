@@ -248,6 +248,8 @@ N_MODELS = sum(r["unique_id"].startswith("model.") for r in _results)
 N_TESTS = sum(r["unique_id"].startswith("test.") for r in _results)
 N_PASSED = sum(r["status"] in ("success", "pass") for r in _results)
 assert N_PASSED == len(_results), "run `uv run dbt build` until everything passes before building the deck"
+N_PRODUCTS = one("select count(*) from main_marts.dim_product where product_id <> -1")[0]
+N_STORES = one("select count(*) from main_marts.dim_store where store_id <> -1")[0]
 units_yoy = one("""select sum(units) / sum(units_py) - 1 from main_marts.mart_sales_bridge_yearly
                    where transaction_year = 2022 and product_id <> -1""")[0]
 ex_furn = {r[0]: r for r in q("""select transaction_year, sum(net_sales), sum(gross_margin) from main_marts.mart_product_yearly
@@ -309,14 +311,15 @@ s = slide("Normalisation and why the mart layer has two tiers")
 bullets(s, [
     "Grain: one fct_sales row per transaction_id (after dedup) = one sales line: month x store x product, qty, price",
     "- Additive measures only (net_sales, cogs_landed, cogs_standard, gross_margin) -> safe to sum at any level",
-    "Dimensions taken out of the repeated attributes: dim_product (17 + unknown), dim_store (287 + unknown)",
+    f"Dimensions taken out of the repeated attributes: dim_product ({N_PRODUCTS} + unknown), dim_store ({N_STORES} + unknown)",
     "- Unknown member (-1) instead of dropping orphans: totals reconcile to source, relationship tests pass",
     "- Store price list derived from the data (price ÷ product-month list price) and stored on dim_store",
     "Tier 1 star schema = the reusable source of truth for any question; Tier 2 reporting marts at the CEO's grains",
     "- Business logic (YoY, opex basis, growth bridge, price health) is written once in SQL and tested; "
     "the deck only reads marts",
     "Tests: keys, relationships, accepted values; source -> fact and fact -> mart reconciliation; bridge sums exactly; "
-    "assumption tests (duplicates agree, one landed cost per product-month, list price = California price)",
+    "assumption tests (duplicates agree, name lookups map to one id, one landed cost per product-month, "
+    "list price = California price)",
     "Rejected: one wide reporting table (brings back the attribute conflicts); YoY and bridge logic in Python "
     "(untested, duplicated); SCD2 product history (effective dates contradict sales, e.g. Cosmetics sold from 2019 "
     "but effective from Jun-2020 -> not trusted)",
