@@ -15,6 +15,9 @@ models:
         tests: [unique, not_null]
       - name: store_opex_annual
         description: Direct store operating cost, treated as ANNUAL.
+      - name: price_list
+        description: Regular price list the store sells on (see int_store_price_list).
+        tests: [not_null]
   - name: fct_sales
     description: >
       Sales fact at transaction-line grain (one row per transaction_id). Net sales = quantity x unit_price
@@ -49,3 +52,7 @@ models:
     description: Store x year P&L to store contribution.
   - name: mart_sales_monthly
     description: Month x category x region trend.
+  - name: mart_price_monthly
+    description: >
+      Product x month price health - reference list price, landed cost, list markup, realised price,
+      price realisation vs list, and promo unit share.

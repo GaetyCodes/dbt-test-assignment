@@ -26,3 +26,18 @@ models:
     columns:
       - name: transaction_id
         tests: [unique, not_null]
+  - name: int_transaction_price_index
+    description: Each line's price relative to the product-month reference list price (highest price, always a California store).
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+  - name: int_store_price_list
+    description: Regular price list per store (median price_index); lower indices in a month are promotions.
+    columns:
+      - name: store_id
+        tests: [unique, not_null]
+      - name: price_list
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Premium (1.00)', 'Base (0.59)', 'Township (0.53)', 'Other']
