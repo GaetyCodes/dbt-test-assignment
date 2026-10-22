@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: int_transactions_deduped
+    description: One row per transaction_id; latest ingestion wins, tie-break POS > ERP > Manual.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+  - name: int_store_attributes
+    description: One resolved attribute set per real store (MD -> South, opex mode, restated name stripped).
+    columns:
+      - name: store_id
+        tests: [unique, not_null]
+      - name: region_name
+        tests:
+          - accepted_values:
+              arguments:
+                values: [Northeast, South, Midwest, West]
+  - name: int_product_attributes
+    description: One resolved attribute set per real product.
+    columns:
+      - name: product_id
+        tests: [unique, not_null]
+  - name: int_transactions_keyed
+    description: Deduped transactions with recovered keys; unresolvable / placeholder keys mapped to -1.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
