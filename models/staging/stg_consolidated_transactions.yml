@@ -3,12 +3,68 @@ version: 2
 models:
   - name: stg_consolidated_transactions
     description: >
-      Sample staging model for the denormalized landing extract.
-      Next step for candidates: normalize into dims + fact (this model alone is not the end state).
+      Light cleaning of the denormalized landing extract: snake_case, types, text trimming, per-unit costs and
+      data-quality flags. One row per source row; nothing is dropped here (dedup and key repair are in intermediate).
     columns:
+      - name: source_row_id
+        description: Row number in the landing file; tie-breaker for dedup.
       - name: transaction_id
-        description: Business transaction id (not unique in the raw extract).
+        description: Business transaction id (NOT unique here - 9,815 ids appear twice).
         tests:
           - not_null
+      - name: transaction_month
+        description: "{{ doc('transaction_month') }}"
       - name: quantity
-        description: May be negative for returns.
+        description: "{{ doc('quantity') }}"
+      - name: unit_price
+        description: "{{ doc('unit_price') }}"
+      - name: unit_cost_per_pack
+        description: Source unit_cost. Per PACK (Dining pack_size = 2); diverges from landed cost on duplicate copies and on 2022 Furniture.
+      - name: standard_cost_per_pack
+        description: Source standard_unit_cost (budget cost). Per PACK.
+      - name: landed_cost_per_unit
+        description: "{{ doc('landed_cost_per_unit') }}"
+      - name: pack_size
+        description: Units per pack (2 for Dining, else 1).
+      - name: product_id
+        description: Source product index; null on 1,310 rows (recovered by name downstream); 99901 = placeholder.
+      - name: product_name_on_transaction
+        description: Product name on the transaction row.
+      - name: product_name_catalog
+        description: Catalog product name; disagrees for product 19 ('Vanities' vs 'Cosmetics').
+      - name: product_category
+        description: "{{ doc('product_category') }}"
+      - name: product_effective_from
+        description: Catalog effective-from date. Not used - contradicts sales dates (e.g. product 19 sold before it).
+      - name: product_effective_to
+        description: Catalog effective-to date. Not used.
+      - name: store_id
+        description: Source store id; null on 1,308 rows (recovered by name + state downstream); 99901 = placeholder.
+      - name: store_name
+        description: Store name with any '(restated)' suffix removed.
+      - name: is_restated_store_row
+        description: Source store_name carried '(restated)' (store 50, 2022, opex 10x the usual value).
+      - name: state_code
+        description: Two-letter US state code (upper-cased).
+      - name: state_name
+        description: State name.
+      - name: region_name
+        description: Region as given on the row; conflicts for Maryland stores (resolved in int_store_attributes).
+      - name: store_type
+        description: Municipality type of the store location (City, Township, Borough, ...).
+      - name: store_sqft
+        description: Store size in square feet.
+      - name: store_opex_annual
+        description: Source direct_store_operating_costs, interpreted as annual.
+      - name: source_system
+        description: Lineage - system that delivered the row (POS, ERP, Manual). Not the economic truth.
+      - name: ingested_at
+        description: Lineage - load date. Used only to pick a copy when ids collide.
+      - name: unit_cost_per_unit
+        description: unit_cost_per_pack ÷ pack_size.
+      - name: standard_cost_per_unit
+        description: "{{ doc('standard_cost_per_unit') }}"
+      - name: is_return
+        description: quantity < 0.
+      - name: is_ingested_before_txn
+        description: ingested_at earlier than transaction_month (85 rows, all the 99901 placeholder).

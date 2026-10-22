@@ -1,31 +1,69 @@
 version: 2
 
 models:
+  # ---------------------------------------------------------------- tier 1: star schema
   - name: dim_product
     description: Product dimension, one row per product_id (+ -1 unknown member).
     columns:
       - name: product_id
+        description: "{{ doc('product_id') }}"
         tests: [unique, not_null]
+      - name: product_name
+        description: "{{ doc('product_name') }}"
+      - name: product_catalog_names
+        description: All catalog names seen for the product (e.g. 'Cosmetics / Vanities').
+      - name: product_category
+        description: "{{ doc('product_category') }}"
       - name: pack_size
         description: Units per pack. Raw unit_cost / standard_unit_cost are per pack.
+      - name: product_effective_from
+        description: Earliest catalog effective-from date. Informational only - contradicts sales dates.
+      - name: product_effective_to
+        description: Latest catalog effective-to date. Informational only.
+
   - name: dim_store
-    description: Store dimension with resolved region, one row per store_id (+ -1 unknown member).
+    description: Store dimension with resolved attributes and price list, one row per store_id (+ -1 unknown member).
     columns:
       - name: store_id
+        description: "{{ doc('store_id') }}"
         tests: [unique, not_null]
+      - name: store_name
+        description: Store name ('(restated)' suffix removed).
+      - name: state_code
+        description: Two-letter US state code.
+      - name: state_name
+        description: State name.
+      - name: region_name
+        description: US region; Maryland forced to South (Census) where rows conflicted.
+      - name: store_type
+        description: Municipality type of the store location (City, Township, Borough, ...).
+      - name: store_sqft
+        description: Store size in square feet.
       - name: store_opex_annual
-        description: Direct store operating cost, treated as ANNUAL.
+        description: Direct store operating cost, treated as ANNUAL. Most frequent value (store 50's 10x restatement rejected).
+      - name: had_conflicting_attributes
+        description: True if the source repeated conflicting region, opex or name for this store.
+      - name: price_list_index
+        description: "{{ doc('price_list_index') }}"
       - name: price_list
-        description: Regular price list the store sells on (see int_store_price_list).
+        description: "{{ doc('price_list') }}"
         tests: [not_null]
+
   - name: fct_sales
     description: >
       Sales fact at transaction-line grain (one row per transaction_id). Net sales = quantity x unit_price
       (returns are negative). Gross margin on landed cost per unit; standard-cost margin for sensitivity.
+      Data-quality handling is flagged per row, nothing dropped.
     columns:
       - name: transaction_id
+        description: "{{ doc('transaction_id') }}"
         tests: [unique, not_null]
+      - name: transaction_month
+        description: "{{ doc('transaction_month') }}"
+      - name: transaction_year
+        description: "{{ doc('transaction_year') }}"
       - name: product_id
+        description: "{{ doc('product_id') }}"
         tests:
           - not_null
           - relationships:
@@ -33,35 +71,316 @@ models:
                 to: ref('dim_product')
                 field: product_id
       - name: store_id
+        description: "{{ doc('store_id') }}"
         tests:
           - not_null
           - relationships:
               arguments:
                 to: ref('dim_store')
                 field: store_id
+      - name: quantity
+        description: "{{ doc('quantity') }}"
+      - name: unit_price
+        description: "{{ doc('unit_price') }}"
       - name: landed_cost_per_unit
+        description: "{{ doc('landed_cost_per_unit') }}"
         tests: [not_null]
+      - name: standard_cost_per_unit
+        description: "{{ doc('standard_cost_per_unit') }}"
+      - name: net_sales
+        description: "{{ doc('net_sales') }}"
+      - name: cogs_landed
+        description: quantity x landed_cost_per_unit.
+      - name: cogs_standard
+        description: quantity x standard_cost_per_unit (sensitivity).
+      - name: gross_margin
+        description: "{{ doc('gross_margin') }}"
+      - name: gross_margin_standard
+        description: "{{ doc('gross_margin_standard') }}"
+      - name: is_return
+        description: quantity < 0.
+      - name: source_system
+        description: Lineage - system of the kept copy (POS, ERP, Manual).
+      - name: ingested_at
+        description: Lineage - load date of the kept copy.
+      - name: was_duplicated
+        description: The transaction_id appeared more than once in the source; latest ingestion kept.
+      - name: is_product_key_recovered
+        description: Product id was null in the source and recovered from the product name.
+      - name: is_store_key_recovered
+        description: Store id was null in the source; recovered by store name + state where 1:1 (else -1).
+      - name: is_ingested_before_txn
+        description: Loaded before its own transaction month (85 placeholder rows) - investigate.
+
+  # ---------------------------------------------------------------- tier 2: reporting marts
   - name: mart_kpi_yearly
-    description: Company KPIs per year with YoY abs/% for Net Sales, Gross Margin, Store Contribution and price.
+    description: Company KPIs per year with YoY abs/% for Net Sales, Gross Margin and store contribution.
     columns:
       - name: transaction_year
+        description: "{{ doc('transaction_year') }}"
         tests: [unique, not_null]
+      - name: net_sales
+        description: "{{ doc('net_sales') }}"
+      - name: gross_margin
+        description: "{{ doc('gross_margin') }}"
+      - name: gross_margin_standard
+        description: "{{ doc('gross_margin_standard') }}"
+      - name: units
+        description: "{{ doc('units') }}"
+      - name: returns_value
+        description: Value of returned goods (positive number).
+      - name: store_opex
+        description: "{{ doc('store_opex') }}"
+      - name: store_contribution
+        description: "{{ doc('store_contribution') }}"
+      - name: avg_selling_price
+        description: Net Sales ÷ units. Includes product and location mix - not a like-for-like price.
+      - name: gross_margin_pct
+        description: "{{ doc('gross_margin_pct') }}"
+      - name: store_contribution_pct
+        description: Store contribution ÷ Net Sales.
+      - name: net_sales_yoy_abs
+        description: "{{ doc('yoy_abs') }}"
+      - name: net_sales_yoy_pct
+        description: "{{ doc('yoy_pct') }}"
+      - name: gross_margin_yoy_abs
+        description: "{{ doc('yoy_abs') }}"
+      - name: gross_margin_yoy_pct
+        description: "{{ doc('yoy_pct') }}"
+      - name: store_contribution_yoy_abs
+        description: "{{ doc('yoy_abs') }}"
+      - name: store_contribution_yoy_pct
+        description: "{{ doc('yoy_pct') }}"
+      - name: avg_selling_price_yoy_pct
+        description: YoY change in avg_selling_price. Mix-affected; use mart_sales_bridge_yearly for price.
+
   - name: mart_product_yearly
     description: Product x year performance (sales, margin, ASP incl. location mix, landed cost). Growth bridge lives in mart_sales_bridge_yearly.
+    columns:
+      - name: product_id
+        description: "{{ doc('product_id') }}"
+      - name: product_name
+        description: "{{ doc('product_name') }}"
+      - name: product_category
+        description: "{{ doc('product_category') }}"
+      - name: transaction_year
+        description: "{{ doc('transaction_year') }}"
+      - name: units
+        description: "{{ doc('units') }}"
+      - name: net_sales
+        description: "{{ doc('net_sales') }}"
+      - name: cogs_landed
+        description: Landed cost of goods sold.
+      - name: gross_margin
+        description: "{{ doc('gross_margin') }}"
+      - name: gross_margin_standard
+        description: "{{ doc('gross_margin_standard') }}"
+      - name: avg_selling_price
+        description: Net Sales ÷ units. Includes location mix (California ~1.7x base).
+      - name: avg_landed_cost
+        description: Landed cost ÷ units.
+      - name: gross_margin_pct
+        description: "{{ doc('gross_margin_pct') }}"
+      - name: gross_margin_per_unit
+        description: Gross Margin ÷ units.
+      - name: units_py
+        description: "{{ doc('prior_year') }}"
+      - name: net_sales_py
+        description: "{{ doc('prior_year') }}"
+      - name: gross_margin_py
+        description: "{{ doc('prior_year') }}"
+      - name: avg_selling_price_py
+        description: "{{ doc('prior_year') }}"
+      - name: avg_landed_cost_py
+        description: "{{ doc('prior_year') }}"
+      - name: net_sales_yoy_abs
+        description: "{{ doc('yoy_abs') }}"
+      - name: net_sales_yoy_pct
+        description: "{{ doc('yoy_pct') }}"
+      - name: gross_margin_yoy_abs
+        description: "{{ doc('yoy_abs') }}"
+      - name: gross_margin_yoy_pct
+        description: "{{ doc('yoy_pct') }}"
+      - name: asp_yoy_pct
+        description: YoY change in avg_selling_price. NOT like-for-like (includes location mix).
+      - name: landed_cost_yoy_pct
+        description: YoY change in average landed cost per unit.
+
   - name: mart_store_yearly
-    description: Store x year P&L to store contribution.
-  - name: mart_sales_monthly
-    description: Month x category x region trend.
+    description: Store x year P&L to store contribution, with price list and opex sensitivities.
+    columns:
+      - name: store_id
+        description: "{{ doc('store_id') }}"
+      - name: transaction_year
+        description: "{{ doc('transaction_year') }}"
+      - name: net_sales
+        description: "{{ doc('net_sales') }}"
+      - name: gross_margin
+        description: "{{ doc('gross_margin') }}"
+      - name: units
+        description: "{{ doc('units') }}"
+      - name: months_trading
+        description: Distinct months with sales in the year.
+      - name: is_first_trading_year
+        description: First year with sales, after 2019 (i.e. a new store; 2019 is the start of the data).
+      - name: store_name
+        description: Store name.
+      - name: state_code
+        description: Two-letter US state code.
+      - name: region_name
+        description: US region.
+      - name: store_type
+        description: Municipality type of the store location.
+      - name: price_list
+        description: "{{ doc('price_list') }}"
+      - name: price_list_index
+        description: "{{ doc('price_list_index') }}"
+      - name: store_sqft
+        description: Store size in square feet.
+      - name: store_opex
+        description: "{{ doc('store_opex') }}"
+      - name: store_contribution
+        description: "{{ doc('store_contribution') }}"
+      - name: store_contribution_opex_prorated
+        description: "{{ doc('store_contribution_opex_prorated') }}"
+      - name: store_contribution_opex_monthly
+        description: "{{ doc('store_contribution_opex_monthly') }}"
+      - name: gross_margin_pct
+        description: "{{ doc('gross_margin_pct') }}"
+      - name: net_sales_per_sqft
+        description: Net Sales ÷ store_sqft.
+      - name: units_per_1k_sqft
+        description: Units per 1,000 sq ft - volume density, comparable across price lists.
+      - name: is_profitable
+        description: store_contribution > 0.
+      - name: is_profitable_opex_prorated
+        description: store_contribution_opex_prorated > 0.
+      - name: net_sales_yoy_abs
+        description: "{{ doc('yoy_abs') }}"
+      - name: net_sales_yoy_pct
+        description: "{{ doc('yoy_pct') }}"
+      - name: store_contribution_yoy_abs
+        description: "{{ doc('yoy_abs') }}"
+
+  - name: mart_price_list_yearly
+    description: >
+      Price list x year store economics - the lens that explains store profitability. Excludes the unknown store.
+      Same opex basis as mart_store_yearly.
+    columns:
+      - name: price_list
+        description: "{{ doc('price_list') }}"
+      - name: transaction_year
+        description: "{{ doc('transaction_year') }}"
+      - name: stores
+        description: Stores trading in the year.
+      - name: new_stores
+        description: Stores in their first trading year.
+      - name: units
+        description: "{{ doc('units') }}"
+      - name: net_sales
+        description: "{{ doc('net_sales') }}"
+      - name: gross_margin
+        description: "{{ doc('gross_margin') }}"
+      - name: gross_margin_pct
+        description: "{{ doc('gross_margin_pct') }}"
+      - name: store_opex
+        description: "{{ doc('store_opex') }}"
+      - name: store_contribution
+        description: "{{ doc('store_contribution') }}"
+      - name: store_contribution_opex_prorated
+        description: "{{ doc('store_contribution_opex_prorated') }}"
+      - name: store_contribution_opex_monthly
+        description: "{{ doc('store_contribution_opex_monthly') }}"
+      - name: loss_making_stores
+        description: Stores with store_contribution <= 0.
+      - name: loss_making_stores_opex_prorated
+        description: Stores with pro-rated contribution <= 0.
+      - name: units_per_1k_sqft
+        description: Units per 1,000 sq ft.
+      - name: net_sales_per_sqft
+        description: Net Sales per sq ft.
+      - name: opex_per_sqft
+        description: Store opex per sq ft.
+
+  - name: mart_sales_bridge_yearly
+    description: >
+      Net Sales YoY bridge per product-year - volume, location (price list) mix, like-for-like price, new product.
+      Components sum exactly to net_sales_yoy_abs (tested). Replaces the earlier product-level price/volume split,
+      which counted the shift towards California as price.
+    columns:
+      - name: product_id
+        description: "{{ doc('product_id') }}"
+      - name: product_name
+        description: "{{ doc('product_name') }}"
+      - name: product_category
+        description: "{{ doc('product_category') }}"
+      - name: transaction_year
+        description: "{{ doc('transaction_year') }}"
+      - name: net_sales
+        description: "{{ doc('net_sales') }}"
+      - name: net_sales_py
+        description: "{{ doc('prior_year') }}"
+      - name: units
+        description: "{{ doc('units') }}"
+      - name: units_py
+        description: "{{ doc('prior_year') }}"
+      - name: net_sales_yoy_abs
+        description: "{{ doc('yoy_abs') }}"
+      - name: volume_effect
+        description: (units - units_py) x prior-year average price.
+      - name: mix_effect
+        description: Effect of selling a different share through each price list, at prior-year prices per list.
+      - name: price_effect
+        description: Like-for-like price change within product x price list, at this year's units.
+      - name: new_product_effect
+        description: Net Sales of products with no prior year (the -1 unknown product in 2022).
+
   - name: mart_price_monthly
     description: >
       Product x month price health - reference list price, landed cost, list markup, realised price,
-      price realisation vs list, and promo unit share.
-  - name: mart_sales_bridge_yearly
-    description: >
-      Net Sales YoY bridge per product-year - volume, location (price list) mix, like-for-like price,
-      new product. Components sum exactly to net_sales_yoy_abs (tested). Replaces the earlier product-level
-      price/volume split, which counted the shift towards California as price.
-  - name: mart_price_list_yearly
-    description: >
-      Price list x year store economics (stores, units per sq ft, sales, GM%, opex, contribution with
-      annual / pro-rated / monthly opex, loss-making store counts). Excludes the unknown store.
+      price realisation vs list, and promo unit share. One row per product-month (tested).
+    columns:
+      - name: product_id
+        description: "{{ doc('product_id') }}"
+      - name: product_name
+        description: "{{ doc('product_name') }}"
+      - name: product_category
+        description: "{{ doc('product_category') }}"
+      - name: transaction_month
+        description: "{{ doc('transaction_month') }}"
+      - name: list_price
+        description: Reference list price = highest price paid that month (always a California store, tested).
+      - name: landed_cost_per_unit
+        description: "{{ doc('landed_cost_per_unit') }}"
+      - name: list_markup
+        description: list_price ÷ landed cost. Constant per product for 2019-2022 except Furniture in 2022.
+      - name: list_gross_margin_pct
+        description: Gross margin % at list price (1 - landed cost ÷ list price).
+      - name: units
+        description: "{{ doc('units') }}"
+      - name: realised_price
+        description: Net Sales ÷ units.
+      - name: price_realisation
+        description: Net Sales ÷ (units x list price). Reflects price lists and promotions.
+      - name: promo_unit_share
+        description: Share of units sold below the store's regular price list (promotions; Jan, May, Sep, Dec).
+
+  - name: mart_sales_monthly
+    description: Month x category x region trend.
+    columns:
+      - name: transaction_month
+        description: "{{ doc('transaction_month') }}"
+      - name: product_category
+        description: "{{ doc('product_category') }}"
+      - name: region_name
+        description: US region of the store.
+      - name: units
+        description: "{{ doc('units') }}"
+      - name: net_sales
+        description: "{{ doc('net_sales') }}"
+      - name: gross_margin
+        description: "{{ doc('gross_margin') }}"
+      - name: gross_margin_standard
+        description: "{{ doc('gross_margin_standard') }}"
+      - name: landed_cost_to_price
+        description: Landed cost ÷ Net Sales.
